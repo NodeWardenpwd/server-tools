@@ -11,28 +11,22 @@
 
 ### 使用方法
 
-#### 方式 A：使用 curl (推荐)
-这是最标准的方式，脚本下载后直接通过管道传给 **bash** 执行。
-
 长链
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | bash
+bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh)
 ```
 
 短链
 
 ```bash
-curl -sSL https://node.netlib.re/ssh-harden | bash
+bash <(curl -sSL https://node.netlib.re/ssh-harden)
 ```
 
-#### 方式 B：使用 wget
-如果服务器上没有安装 **curl**，可以使用这个：
-
-长链
+如提示未安装curl则先安装
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | bash
+apt-get update && apt-get install -y curl
 ```
 
 短链
