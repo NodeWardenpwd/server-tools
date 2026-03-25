@@ -134,10 +134,16 @@ input_confirm "是否禁止 Root 登录? [y/n]: " c_root
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_user
 [[ "$c_user" == "y" ]] && allow_users="AllowUsers $username"
 
-# 确保主配置文件包含 Include 路径
-grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config || sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+# 1. 【核心修复】注释掉主配置中的 Port 定义，防止新旧端口同时并存
+# 这行命令会把主配置文件里所有以 Port 开头的行都加上 # 注释掉
+sed -i 's/^Port /#Port /g' /etc/ssh/sshd_config
 
-# 写入配置
+# 2. 确保主配置文件包含 Include 路径（放在第一行）
+if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
+    sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+fi
+
+# 3. 写入子配置 (在这里定义新的 Port)
 mkdir -p /etc/ssh/sshd_config.d/
 cat <<EOF > /etc/ssh/sshd_config.d/ssh.conf
 Port $ssh_port
