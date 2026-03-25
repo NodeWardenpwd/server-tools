@@ -6,17 +6,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# 错误处理函数
 error_exit() {
     echo -e "\n${RED}[错误] $1${NC}"
     echo -e "${YELLOW}建议: $2${NC}"
     exit 1
 }
 
-# 检查 root 权限
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 用户身份运行。"
 
-# 交互输入函数
 input() {
     read -p "$1" "$2" < /dev/tty
 }
@@ -24,32 +21,38 @@ input() {
 # --- 0. 环境预检与 sudo 安装询问 ---
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-if ! command -v sudo &>/dev/null; then
-    echo -e "${YELLOW}[注意] 系统未安装 'sudo' 软件包。${NC}"
-    echo -e "若不安装 sudo，新创建的普通用户将无法执行管理任务（提权）。"
+# 严格检测 sudo 是否存在
+if command -v sudo &>/dev/null; then
+    echo -e "${GREEN}[OK] 系统已安装 sudo。${NC}"
+else
+    # 发现未安装，进入强制询问环节
+    echo -e "${YELLOW}[注意] 经检测，您的系统未安装 'sudo' 软件包。${NC}"
+    echo -e "警告：如果不安装 sudo，后续创建的普通用户将【无法提权】成为 root，"
+    echo -e "这会导致您失去对服务器的管理能力。"
+    echo -e "------------------------------------------------------------"
     
-    input "是否现在自动安装 sudo? (推荐安装) [y/n]: " install_sudo
+    # 这里是硬性询问
+    input "是否现在安装 sudo? (选 n 将直接退出脚本) [y/n]: " confirm_install
     
-    if [[ "$install_sudo" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}[INFO] 正在尝试安装 sudo...${NC}"
+    if [[ "$confirm_install" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}[INFO] 正在启动安装程序...${NC}"
         if command -v apt-get &>/dev/null; then
-            apt-get update && apt-get install -y sudo || error_exit "sudo 安装失败" "请检查网络或软件源。"
+            apt-get update && apt-get install -y sudo || error_exit "安装失败" "网络错误或软件源无效。"
         elif command -v yum &>/dev/null; then
-            yum install -y sudo || error_exit "sudo 安装失败" "请检查 yum 源。"
+            yum install -y sudo || error_exit "安装失败" "请检查 yum 源。"
         else
-            error_exit "未找到包管理器" "系统不支持 apt 或 yum，请手动安装 sudo。"
+            error_exit "未找到包管理器" "请手动安装 sudo 后再试。"
         fi
         echo -e "${GREEN}[OK] sudo 安装成功。${NC}"
     else
-        echo -e "${RED}\n[终止] 用户拒绝安装 sudo。${NC}"
-        echo -e "由于普通用户无法提权，继续配置将失去管理意义。脚本退出。"
+        # 用户选了 n 或者直接回车，脚本绝对停止
+        echo -e "${RED}\n[终止] 您选择了不安装 sudo。${NC}"
+        echo -e "安全起见，脚本已停止执行，未修改任何系统设置。"
         exit 1
     fi
-else
-    echo -e "${GREEN}[OK] 系统已安装 sudo。${NC}"
 fi
 
-# --- 1. 用户创建 ---
+# --- 1. 用户创建 | User Creation ---
 echo -e "\n--- 1. 用户创建 | User Creation ---"
 input "请输入你要创建的用户名: " username
 [[ -z "$username" ]] && error_exit "用户名不能为空" ""
@@ -64,12 +67,12 @@ fi
 echo -e "\n${YELLOW}>>> 请为新用户 $username 设置登录密码 (输入时不显示字符):${NC}"
 passwd "$username" < /dev/tty || error_exit "密码设置失败" "两次输入不一致。"
 
-# --- 2. 权限加固 (注入 sudoers) ---
+# --- 2. 权限加固 ---
 echo -e "\n--- 2. 权限配置 | Privilege Setup ---"
-# 直接写入 sudoers.d 确保提权 100% 成功
+# 直接注入 sudoers.d 确保提权 100% 成功
 echo "$username ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$username"
 chmod 440 "/etc/sudoers.d/$username"
-echo -e "${GREEN}[OK] 权限配置完成。用户 $username 已获得提权资格。${NC}"
+echo -e "${GREEN}[OK] 权限配置完成。${NC}"
 
 # --- 3. SSH 密钥配置 ---
 echo -e "\n--- 3. SSH 公钥配置 | SSH Key Setup ---"
@@ -84,10 +87,9 @@ read -r public_key < /dev/tty
 echo "$public_key" > "$user_home/.ssh/authorized_keys"
 chmod 600 "$user_home/.ssh/authorized_keys"
 chown -R "$username:$username" "$user_home/.ssh"
-echo -e "${GREEN}[OK] 密钥配置完成。${NC}"
 
 # --- 4. SSH 安全设置 ---
-echo -e "\n--- 4. SSH 安全设置选项 | SSH Configuration ---"
+echo -e "\n--- 4. SSH 安全加固 | SSH Configuration ---"
 ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_users=""
 
 input "是否修改 SSH 默认端口 22? [y/n]: " c_port
@@ -112,15 +114,9 @@ $allow_users
 EOF
 
 # --- 5. 重启与指引 ---
-echo -e "\n${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-echo -e "关键警告 (CRITICAL WARNING):"
-echo -e "1. 重启后【务必保留当前窗口】不要关闭！"
-echo -e "2. 立即【新开一个窗口】尝试新用户和新端口登录。"
-echo -e "3. 登录后执行 'sudo -i' 测试提权是否成功。"
-echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${NC}\n"
-
+echo -e "\n${RED}!!! 警示：重启后请开启新窗口，并使用 'sudo -i' 测试提权 !!!${NC}"
 input "是否立即重启 SSHD 生效? [y/n]: " res_sshd
 if [[ "$res_sshd" =~ ^[Yy]$ ]]; then
     systemctl restart sshd
-    echo -e "${GREEN}[✔] SSHD 已重启。测试命令: ssh -p $ssh_port $username@$(curl -s ifconfig.me || echo 'IP')${NC}"
+    echo -e "${GREEN}SSHD 已重启。测试命令: ssh -p $ssh_port $username@$(curl -s ifconfig.me || echo 'IP')${NC}"
 fi
