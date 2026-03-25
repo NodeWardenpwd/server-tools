@@ -100,7 +100,7 @@ command -v curl &>/dev/null || install_pkg_confirm "curl" "用于获取公网IP"
 # --- 4. 用户创建 & 强制密码校验 ---
 # --- 1. 用户创建部分 ---
 while true; do
-    echo -e "\n${YELLOW}请输入要创建的用户名 (例如 cmssky):${NC}"
+    echo -e "\n${YELLOW}请输入要创建的用户名:${NC}"
     read -r username < /dev/tty
     if [[ -n "$username" ]]; then
         # 检查用户是否已存在，不存在则创建
