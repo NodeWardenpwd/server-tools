@@ -13,7 +13,7 @@ error_exit() {
     exit 1
 }
 
-# --- 自动安装工具函数 (核心修改：支持 Alpine) ---
+# --- 自动安装工具函数 (支持 Alpine/Debian/CentOS) ---
 install_pkg() {
     local pkg=$1
     if command -v apk &>/dev/null; then
@@ -26,7 +26,6 @@ install_pkg() {
 }
 
 # --- 验证函数库 ---
-
 input_confirm() {
     local prompt="$1"
     local var_name="$2"
@@ -47,9 +46,9 @@ input_port() {
         if [[ ! "$res" =~ ^[0-9]+$ ]] || [ "$res" -lt 1 ] || [ "$res" -gt 65535 ]; then
             echo -e "${RED}错误：请输入有效数字！${NC}"; continue
         fi
+        # 兼容 Alpine 的 ss 工具位置
         if ss -tln | grep -q ":$res "; then
-            local p_info=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2 | head -n1)
-            echo -e "${RED}错误：端口 $res 已被占用！ [${p_info:-未知}]${NC}"
+            echo -e "${RED}错误：端口 $res 已被占用！${NC}"
         else
             echo -e "${GREEN}端口 $res 可用。${NC}"
             eval "$var_name='$res'"; break
@@ -63,25 +62,10 @@ input_port() {
 # --- 0. 环境预检 ---
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 针对 Debian 10 EOL 修复
-if [ -f /etc/debian_version ] && grep -q "^10" /etc/debian_version; then
-    if ! apt update &>/dev/null; then
-        sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list
-        sed -i 's/security.debian.org/archive.debian.org/g' /etc/apt/sources.list
-        sed -i '/-updates/d' /etc/apt/sources.list
-        echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
-        apt update
-    fi
-fi
-
-# 安装必要组件 (ss, sudo, curl)
+# 安装必要组件 (ss 工具、sudo、curl)
 command -v ss &>/dev/null || install_pkg iproute2
 command -v sudo &>/dev/null || install_pkg sudo
 command -v curl &>/dev/null || install_pkg curl
-
-if ! command -v sudo &>/dev/null; then
-    error_exit "无法安装 sudo" "请手动执行安装命令后再运行此脚本。"
-fi
 
 # --- 1. 用户创建 ---
 echo -e "\n--- 1. 用户创建 | User Creation ---"
@@ -90,10 +74,15 @@ while true; do
     if [[ -z "$username" ]]; then
         echo -e "${RED}用户名不能为空！${NC}"
     elif id "$username" &>/dev/null; then
-        echo -e "${YELLOW}用户 $username 已存在，更新配置。${NC}"; break
+        echo -e "${YELLOW}用户 $username 已存在。${NC}"; break
     else
-        useradd -m -s /bin/bash "$username" 2>/dev/null || adduser -D -s /bin/bash "$username"
-        break
+        # 兼容 Alpine 的用户创建命令
+        if command -v useradd &>/dev/null; then
+            useradd -m -s /bin/bash "$username"
+        else
+            adduser -D -s /bin/bash "$username"
+        fi
+        [[ $? -eq 0 ]] && break || error_exit "创建失败" "检查权限或系统状态。"
     fi
 done
 
@@ -122,7 +111,7 @@ chown -R "$username:$username" "$user_home/.ssh"
 echo -e "\n--- 4. SSH 安全设置 ---"
 ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_users=""
 
-input_confirm "修改 SSH 默认端口 22? [y/n]: " c_port
+input_confirm "修改端口? [y/n]: " c_port
 [[ "$c_port" == "y" ]] && input_port ssh_port
 input_confirm "禁用密码登录? [y/n]: " c_pwd
 [[ "$c_pwd" == "y" ]] && pwd_auth="no"
@@ -145,20 +134,23 @@ PermitRootLogin $permit_root
 $allow_users
 EOF
 
-# --- 5. 重启 (暴力兼容模式) ---
+# --- 5. 重启 (兼容 Alpine OpenRC 和 Systemd) ---
 echo -e "\n${RED}!!! 警示：请开启新窗口测试后再退出当前窗口 !!!${NC}"
 input_confirm "是否立即重启 SSH 服务? [y/n]: " res_sshd
 if [ "$res_sshd" == "y" ]; then
-    # 针对 Debian 12/Ubuntu 的 Socket 修复
+    # 处理 Debian 12/Ubuntu 的 Socket 问题
     systemctl stop ssh.socket 2>/dev/null
     systemctl disable ssh.socket 2>/dev/null
     systemctl mask ssh.socket 2>/dev/null
 
-    # 兼容 Alpine/Ubuntu/Debian 的服务重启
-    rc-service sshd restart 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    # 兼容多发行版重启命令
+    if command -v rc-service &>/dev/null; then
+        rc-service sshd restart
+    else
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    fi
 
     SERVER_IP=$(curl -s6 ifconfig.me || curl -s4 ifconfig.me || echo "IP")
     echo -e "${GREEN}SSHD 已重启。监听端口: $ssh_port${NC}"
     echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$SERVER_IP${NC}"
-    ss -tlnp | grep -E "ssh|sshd"
 fi
