@@ -1,219 +1,206 @@
 #!/bin/bash
 
-# 1. 颜色定义 (修正后的引导符)
+# =================================================================
+# 企业级服务器 SSH 安全初始化与加固脚本 (最终封神版)
+# =================================================================
+
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# 错误处理函数
+# 错误处理
 error_exit() {
-    echo -e "\n${RED}[错误] $1${NC}"
+    echo -e "\n${RED}[致命错误] $1${NC}"
     echo -e "${YELLOW}建议: $2${NC}"
     exit 1
 }
 
-# --- 2. 验证与交互函数库 ---
+# --- 1. 核心工具库 ---
 
-# 验证 y/n 输入
+# 增强型输入确认
 input_confirm() {
-    local prompt="$1"
-    local var_name="$2"
+    local prompt="$1" var_name="$2" res
     while true; do
-        read -p "$prompt" res < /dev/tty
+        read -p "$prompt" res < /dev/tty || error_exit "输入中断" "操作已被用户终止"
         case "$res" in
-            [Yy]* ) eval "$var_name='y'"; break;;
-            [Nn]* ) eval "$var_name='n'"; break;;
-            * ) echo -e "${RED}输入错误！请输入 y 或 n${NC}";;
+            [Yy]* ) printf -v "$var_name" "%s" "y"; break;;
+            [Nn]* ) printf -v "$var_name" "%s" "n"; break;;
+            * ) echo -e "${RED}请输入 y 或 n${NC}";;
         esac
     done
 }
 
-# 自动安装工具函数 (带交互确认)
-install_pkg_confirm() {
-    local pkg=$1
-    local msg=$2
-    local internal_pkg=$3 # 某些系统包名不同，如 iproute2
-    
-    echo -e "${YELLOW}[缺失] 系统未安装 '$pkg' ($msg)。${NC}"
-    input_confirm "是否现在安装 $pkg? [y/n]: " do_inst
-    
-    if [ "$do_inst" == "y" ]; then
-        if command -v apk &>/dev/null; then
-            apk add --no-cache "${internal_pkg:-$pkg}"
-        elif command -v apt-get &>/dev/null; then
-            apt-get update && apt-get install -y "${internal_pkg:-$pkg}"
-        elif command -v yum &>/dev/null; then
-            yum install -y "${internal_pkg:-$pkg}"
-        fi
+# 精准端口监听检测 (适配 IPv4/IPv6 边界)
+is_port_occupied() {
+    local port=$1
+    if command -v ss &>/dev/null; then
+        # 正则匹配说明: 匹配以 : 或 . 结尾的端口号，确保 22 不会匹配到 2222
+        ss -tuln | awk '{print $5}' | grep -qE "[:.]$port$" && return 0 || return 1
+    fi
+    return 1
+}
+
+# 跨平台获取家目录 (适配多发行版)
+get_home_dir() {
+    local user=$1
+    if command -v getent &>/dev/null; then
+        getent passwd "$user" | cut -d: -f6
     else
-        echo -e "${RED}警告：缺少 $pkg 可能会导致脚本部分功能失效。${NC}"
-        # 如果是 sudo，不安装则无法提权，强制退出
-        [[ "$pkg" == "sudo" ]] && error_exit "提权工具缺失" "请安装 sudo 以便新用户能够执行 root 操作。"
+        grep "^${user}:" /etc/passwd | head -n1 | cut -d: -f6
     fi
 }
 
-# 验证端口号输入
-input_port() {
-    local var_name="$1"
-    while true; do
-        read -p "请输入新端口号 (1024-65535): " res < /dev/tty
-        if [[ ! "$res" =~ ^[0-9]+$ ]] || [ "$res" -lt 1 ] || [ "$res" -gt 65535 ]; then
-            echo -e "${RED}错误：请输入 1 到 65535 之间的数字！${NC}"; continue
-        fi
-
-        # 检查端口占用
-        if command -v ss &>/dev/null; then
-            if ss -tln | grep -q ":$res "; then
-                local p_info=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2 | head -n1)
-                echo -e "${RED}错误：端口 $res 已被占用！ [${p_info:-未知程序}]${NC}"
-                continue
-            fi
-        fi
-        echo -e "${GREEN}端口 $res 可用。${NC}"
-        eval "$var_name='$res'"; break
-    done
-}
-
-# --- 3. 环境预检 ---
-[[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 用户身份运行。"
-
+# --- 2. 环境初始化 ---
+[[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# Debian 10 救急逻辑
-if [ -f /etc/debian_version ] && grep -q "^10" /etc/debian_version; then
-    if ! apt update &>/dev/null; then
-        echo -e "${YELLOW}[检测] 发现 Debian 10，正在修复过期软件源...${NC}"
-        sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list
-        sed -i 's/security.debian.org/archive.debian.org/g' /etc/apt/sources.list
-        sed -i '/-updates/d' /etc/apt/sources.list
-        echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
-        apt update
-    fi
-fi
-
-# 检查必要组件
-command -v ss &>/dev/null || install_pkg_confirm "ss工具" "用于检测端口占用" "iproute2"
-command -v sudo &>/dev/null || install_pkg_confirm "sudo" "用于新用户提权"
-command -v curl &>/dev/null || install_pkg_confirm "curl" "用于获取公网IP"
-
-# --- 4. 用户创建 & 强制密码校验 ---
-# --- 1. 用户创建部分 ---
-while true; do
-    echo -e "\n${YELLOW}请输入要创建的用户名:${NC}"
-    read -r username < /dev/tty
-    if [[ -n "$username" ]]; then
-        # 检查用户是否已存在，不存在则创建
-        if id "$username" &>/dev/null; then
-            echo -e "${YELLOW}用户 $username 已存在，直接设置密码。${NC}"
-            break
-        else
-            useradd -m -s /bin/bash "$username" || adduser -D -s /bin/bash "$username"
-            echo -e "${GREEN}用户 $username 创建成功。${NC}"
-            break
+# 自动补全必要组件
+for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
+    cmd=${pkg%%:*}; real_pkg=${pkg##*:}
+    if ! command -v "$cmd" &>/dev/null; then
+        echo -e "${YELLOW}[缺失] $cmd ($real_pkg)${NC}"
+        if command -v apk &>/dev/null; then apk add --no-cache "$real_pkg"
+        elif command -v apt-get &>/dev/null; then apt-get update && apt-get install -y "$real_pkg"
+        elif command -v yum &>/dev/null; then yum install -y "$real_pkg"
         fi
-    else
-        echo -e "${RED}错误：用户名不能为空！${NC}"
     fi
 done
 
-# --- 2. 密码设置部分 (死循环校验) ---
+# --- 3. 用户与权限配置 ---
 while true; do
-    echo -e "\n${YELLOW}>>> 请为 $username 设置密码 (两次输入需一致):${NC}"
-    # 使用 </dev/tty 解决 curl 管道运行脚本时的输入流抢占问题
-    if passwd "$username" </dev/tty; then
-        echo -e "${GREEN}[✔] 密码设置成功！${NC}"
-        break
-    else
-        echo -e "${RED}[✘] 密码设置失败，请重试！${NC}"
-        sleep 1
+    echo -e "\n${YELLOW}请输入创建的用户名 (仅限小写字母/数字/下划线):${NC}"
+    read -r username < /dev/tty || error_exit "输入中断" "操作终止"
+    [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]] && { echo -e "${RED}用户名格式非法！${NC}"; continue; }
+    
+    if ! id "$username" &>/dev/null; then
+        if command -v useradd &>/dev/null; then
+            useradd -m -s /bin/bash "$username"
+        else
+            adduser -D -s /bin/bash "$username" # 适配 Alpine
+        fi
     fi
+    break
 done
 
-# 权限注入
-mkdir -p /etc/sudoers.d/
-echo "$username ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$username"
-chmod 440 "/etc/sudoers.d/$username"
+while true; do
+    echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码:${NC}"
+    passwd "$username" < /dev/tty && break || echo -e "${RED}设置失败，请重试。${NC}"
+done
 
-# --- 5. SSH 密钥配置 ---
-# --- 3. SSH 密钥配置 (全平台适配版) ---
-echo -e "\n--- 3. SSH 公钥配置 | SSH Key Setup ---"
+# Sudoers 幂等写入 (保留下划线)
+S_USER=$(echo "$username" | tr -cd 'a-zA-Z0-9_')
+SUDO_CONF="/etc/sudoers.d/$S_USER"
+echo "$username ALL=(ALL:ALL) ALL" > "$SUDO_CONF.tmp"
+visudo -c -f "$SUDO_CONF.tmp" &>/dev/null \
+    && mv "$SUDO_CONF.tmp" "$SUDO_CONF" && chmod 440 "$SUDO_CONF" \
+    || { rm -f "$SUDO_CONF.tmp"; error_exit "Sudoers 校验失败" "生成的权限配置语法错误。"; }
 
-# 动态获取用户家目录，解决 root 运行脚本时 ~ 指向错误的问题
-user_home=$(eval echo "~$username")
-
-# 1. 创建目录并赋予 700 权限 (只有用户自己可读写)
-mkdir -p "$user_home/.ssh"
-chmod 700 "$user_home/.ssh"
+# --- 4. SSH 公钥安全配置 ---
+echo -e "\n--- 1. SSH 公钥配置 | SSH Key Setup ---"
+user_home=$(get_home_dir "$username")
+ssh_dir="$user_home/.ssh"
+mkdir -p "$ssh_dir" && chmod 700 "$ssh_dir"
 
 while true; do
-    echo -e "${YELLOW}请粘贴 SSH 公钥 (ssh-rsa...):${NC}"
-    read -r raw_key < /dev/tty
-    # 自动修剪空格，防止粘贴时产生干扰
+    echo -e "${YELLOW}请粘贴 SSH 公钥 (ssh-ed25519 或 ssh-rsa):${NC}"
+    read -r raw_key < /dev/tty || error_exit "输入中断" "操作终止"
     public_key=$(echo "$raw_key" | xargs)
-    [[ -n "$public_key" ]] && break || echo -e "${RED}公钥不能为空！${NC}"
+    
+    # 指纹合法性校验 (关键防锁死)
+    echo "$public_key" > "$ssh_dir/test_key.tmp"
+    if ssh-keygen -l -f "$ssh_dir/test_key.tmp" &>/dev/null; then
+        rm -f "$ssh_dir/test_key.tmp"; break
+    else
+        rm -f "$ssh_dir/test_key.tmp"
+        echo -e "${RED}无效公钥格式！请确认复制了完整内容。${NC}"
+    fi
 done
 
-# 2. 写入公钥并强制 600 权限
-# 使用 printf 避免 echo 可能产生的换行符问题
-printf "%s\n" "$public_key" > "$user_home/.ssh/authorized_keys"
-chmod 600 "$user_home/.ssh/authorized_keys"
+auth_file="$ssh_dir/authorized_keys"
+touch "$auth_file" && chmod 600 "$auth_file"
+# 幂等追加公钥
+grep -qxF "$public_key" "$auth_file" || echo "$public_key" >> "$auth_file"
+chown -R "$username:$username" "$ssh_dir"
 
-# 3. 【最关键】修正所有权，否则 SSH 会因为 root 拥有该文件而拒绝登录
-chown -R "$username:$username" "$user_home/.ssh"
+# 修复 SELinux 上下文
+[ -d "$ssh_dir" ] && command -v restorecon &>/dev/null && restorecon -R "$ssh_dir" 2>/dev/null || true
 
-echo -e "${GREEN}公钥配置完成，权限已校验。${NC}"
+# --- 5. SSH 安全加固 (Include 隔离设计) ---
+echo -e "\n--- 2. SSH 安全设置 | SSH Configuration ---"
+ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_rule=""
 
-# --- 6. SSH 安全加固 ---
-echo -e "\n--- 3. SSH 安全设置 | SSH Configuration ---"
-ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_users=""
-
-input_confirm "是否修改 SSH 默认端口 22? [y/n]: " c_port
-[[ "$c_port" == "y" ]] && input_port ssh_port
-input_confirm "是否禁用密码登录? [y/n]: " c_pwd
-[[ "$c_pwd" == "y" ]] && pwd_auth="no"
-input_confirm "是否禁止 Root 登录? [y/n]: " c_root
-[[ "$c_root" == "y" ]] && permit_root="no"
-input_confirm "是否仅允许 $username 登录? [y/n]: " c_user
-[[ "$c_user" == "y" ]] && allow_users="AllowUsers $username"
-
-# 【关键】清理主配置中的端口，开启 Include
-sed -i 's/^Port /#Port /g' /etc/ssh/sshd_config
-if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
-    sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+input_confirm "是否修改 SSH 默认端口? [y/n]: " c_port
+if [[ "$c_port" == "y" ]]; then
+    while true; do
+        read -p "请输入新端口 (1024-65535): " res < /dev/tty || true
+        if [[ "$res" =~ ^[0-9]+$ ]] && [ "$res" -ge 1024 ] && [ "$res" -le 65535 ]; then
+            is_port_occupied "$res" && echo -e "${RED}端口已占用！${NC}" || { ssh_port=$res; break; }
+        fi
+    done
 fi
 
+input_confirm "是否禁用密码登录? (请务必确保公钥已配好) [y/n]: " c_pwd
+[[ "$c_pwd" == "y" ]] && pwd_auth="no"
+
+input_confirm "是否禁止 Root 用户直接登录? [y/n]: " c_root
+[[ "$c_root" == "y" ]] && permit_root="no"
+
+echo -e "\n${RED}[安全警示] AllowUsers 会建立登录白名单。${NC}"
+echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他现有账号将无法通过 SSH 登录。${NC}"
+input_confirm "是否仅允许 $username 登录? [y/n]: " c_allow
+[[ "$c_allow" == "y" ]] && allow_rule="AllowUsers $username"
+
+# 写入隔离配置 (幂等覆盖)
+CONF_D="/etc/ssh/sshd_config.d/ssh_harden.conf"
 mkdir -p /etc/ssh/sshd_config.d/
-cat <<EOF > /etc/ssh/sshd_config.d/ssh.conf
+[ -f "$CONF_D" ] && cp "$CONF_D" "$CONF_D.bak"
+
+cat <<EOF > "$CONF_D"
 Port $ssh_port
 PasswordAuthentication $pwd_auth
 PermitRootLogin $permit_root
-$allow_users
+$allow_rule
 EOF
 
-# --- 7. 重启与指引 ---
-echo -e "\n${RED}!!! 警示：重启后请开启新窗口测试，不要关闭当前窗口 !!!${NC}"
-input_confirm "是否立即重启 SSH 服务? [y/n]: " res_sshd
+# 激活 Include (增强正则匹配)
+if ! grep -Eq "^\s*Include\s+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config; then
+    sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+fi
 
-if [ "$res_sshd" == "y" ]; then
-    # 彻底禁用 Debian 12/Ubuntu 的 Socket 激活模式
-    systemctl stop ssh.socket 2>/dev/null
-    systemctl disable ssh.socket 2>/dev/null
-    systemctl mask ssh.socket 2>/dev/null
+# 预检
+if ! sshd -t; then
+    [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D" || rm -f "$CONF_D"
+    error_exit "SSH 配置预检失败" "语法冲突，已自动回滚。请检查 /etc/ssh/sshd_config 的自定义设置。"
+fi
 
-    # 兼容各发行版的重启命令 (Alpine/Debian/CentOS)
-    if command -v rc-service &>/dev/null; then
-        rc-service sshd restart
+# --- 6. 服务重启与连通性验证 ---
+echo -e "\n${RED}⚠️  注意：如果修改了端口，请务必在云服务器安全组放行 $ssh_port 端口！！${NC}"
+input_confirm "是否立即应用 SSH 配置并重启服务? [y/n]: " res_sshd
+
+if [[ "$res_sshd" == "y" ]]; then
+    # 彻底解除 Socket 激活模式 (Ubuntu/Debian 12 核心修正)
+    if command -v systemctl &>/dev/null; then
+        systemctl disable --now ssh.socket 2>/dev/null || true
+        systemctl restart ssh || systemctl restart sshd
     else
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+        rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
     fi
 
-    # 获取 IP 并打印结果
-    SERVER_IP=$(curl -s6 ifconfig.me || curl -s4 ifconfig.me || echo "服务器IP")
-    echo -e "\n${GREEN}[✔] 配置已生效！${NC}"
-    echo -e "监听端口: ${YELLOW}$ssh_port${NC}"
-    echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$SERVER_IP${NC}"
-    
-    echo -e "\n当前监听状态:"
-    ss -tlnp | grep -E "ssh|sshd"
+    # 延迟自检
+    sleep 2
+    if is_port_occupied "$ssh_port"; then
+        # IPv4 优先获取公网 IP，防止 IPv6 阻塞
+        IP=$(curl -4 -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 ifconfig.me || echo "服务器公网IP")
+        echo -e "\n${GREEN}[✔] SSH 初始化加固成功！${NC}"
+        echo -e "用户: ${YELLOW}$username${NC} | 端口: ${YELLOW}$ssh_port${NC}"
+        echo -e "请在${RED}保留当前窗口${NC}的情况下，开启新终端测试连接："
+        echo -e "${GREEN}ssh -p $ssh_port $username@$IP${NC}"
+    else
+        [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D"
+        error_exit "重启失败" "端口未正常监听，已自动回滚配置。请检查系统日志 (journalctl -u ssh)。"
+    fi
 fi
