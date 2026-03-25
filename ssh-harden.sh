@@ -1,32 +1,45 @@
 #!/bin/bash
 
+# 确保脚本在出错时退出
+set -e
+
 # 检查权限
 if [ "$EUID" -ne 0 ]; then 
   echo "错误：请以 root 权限运行此脚本 (Error: Please run as root)"
   exit 1
 fi
 
+# 定义交互函数，确保从终端读取输入
+input() {
+    read -p "$1" "$2" < /dev/tty
+}
+
 # 1. 创建用户
 echo -e "\n--- 用户创建 | User Creation ---"
-read -p "请输入用户名 (Enter username): " username
+input "请输入用户名 (Enter username): " username
+
 if id "$username" &>/dev/null; then
     echo "用户 $username 已存在。"
 else
+    # 使用交互式 adduser
     adduser "$username"
 fi
 
 # 2. 赋予 sudo 权限
-usermod -aG sudo "$username"
-echo "已将 $username 添加至 sudo 组。"
+# 检查 sudo 是否安装，没安装就跳过
+if command -v usermod &>/dev/null; then
+    usermod -aG sudo "$username" 2>/dev/null || echo "警告: sudo 组不存在，跳过赋予权限。"
+    echo "已尝试将 $username 添加至 sudo 组。"
+fi
 
 # 3. SSH 公钥配置
 echo -e "\n--- SSH 公钥配置 | SSH Key Setup ---"
 user_home="/home/$username"
-sudo -u "$username" mkdir -p "$user_home/.ssh"
+mkdir -p "$user_home/.ssh"
 
 echo "请在此处粘贴您的 SSH 公钥 (Please paste your SSH Public Key):"
-read -r public_key
-echo "$public_key" | sudo -u "$username" tee "$user_home/.ssh/authorized_keys" > /dev/null
+read -r public_key < /dev/tty
+echo "$public_key" > "$user_home/.ssh/authorized_keys"
 
 chmod 700 "$user_home/.ssh"
 chmod 600 "$user_home/.ssh/authorized_keys"
@@ -39,16 +52,18 @@ pwd_auth="yes"
 permit_root="yes"
 allow_users_line=""
 
-read -p "是否修改默认端口 22? (Change SSH port? [y/n]): " c_port
-[[ "$c_port" =~ ^[Yy]$ ]] && read -p "请输入新端口号: " ssh_port
+input "是否修改默认端口 22? (Change SSH port? [y/n]): " c_port
+if [[ "$c_port" =~ ^[Yy]$ ]]; then
+    input "请输入新端口号: " ssh_port
+fi
 
-read -p "是否禁用密码登录? (Disable password login? [y/n]): " c_pwd
+input "是否禁用密码登录? (Disable password login? [y/n]): " c_pwd
 [[ "$c_pwd" =~ ^[Yy]$ ]] && pwd_auth="no"
 
-read -p "是否禁止 Root 登录? (Disable Root login? [y/n]): " c_root
+input "是否禁止 Root 登录? (Disable Root login? [y/n]): " c_root
 [[ "$c_root" =~ ^[Yy]$ ]] && permit_root="no"
 
-read -p "是否仅允许 $username 登录? (Only allow $username? [y/n]): " c_user
+input "是否仅允许 $username 登录? (Only allow $username? [y/n]): " c_user
 [[ "$c_user" =~ ^[Yy]$ ]] && allow_users_line="AllowUsers $username"
 
 # 写入配置
@@ -67,18 +82,14 @@ echo -e "关键警告 (CRITICAL WARNING):"
 echo -e "重启 SSHD 后，请【务必保留当前窗口】不要关闭！"
 echo -e "立即【新开一个终端窗口】尝试使用新用户和新端口登录。"
 echo -e "如果新窗口登录失败，你可以在当前窗口即时修复配置，否则将彻底无法连接！"
-echo -e "----------------------------------------------------------------"
-echo -e "After restarting SSHD, DO NOT close this current window!"
-echo -e "Immediately open a NEW terminal window to test the login."
-echo -e "If it fails, you can still fix it in this session."
 echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\033[0m\n"
 
-read -p "是否立即重启 SSHD 以应用更改? (Restart SSHD now? [y/n]): " restart_sshd
+input "是否立即重启 SSHD 以应用更改? (Restart SSHD now? [y/n]): " restart_sshd
 
 if [[ "$restart_sshd" =~ ^[Yy]$ ]]; then
     systemctl restart sshd
     echo -e "\n[✔] SSHD 已重启！"
-    echo -e "测试命令建议: ssh -p $ssh_port $username@$(curl -s ifconfig.me)"
+    echo -e "测试命令: ssh -p $ssh_port $username@$(curl -s ifconfig.me || echo '您的服务器IP')"
 else
-    echo -e "\n[!] 已跳过重启。手动重启命令: sudo systemctl restart sshd"
+    echo -e "\n[!] 已跳过重启。手动重启命令: systemctl restart sshd转换"
 fi
