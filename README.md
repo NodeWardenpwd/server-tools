@@ -17,13 +17,13 @@
 长链
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | bash
 ```
 
 短链
 
 ```bash
-curl -sSL https://node.netlib.re/ssh-harden | sudo bash
+curl -sSL https://node.netlib.re/ssh-harden | bash
 ```
 
 #### 方式 B：使用 wget
@@ -32,11 +32,11 @@ curl -sSL https://node.netlib.re/ssh-harden | sudo bash
 长链
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh | bash
 ```
 
 短链
 
 ```bash
-wget -qO- https://node.netlib.re/ssh-harden | sudo bash
+wget -qO- https://node.netlib.re/ssh-harden | bash
 ```
