@@ -3,7 +3,7 @@
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+YELLOW='\1;33m'
 NC='\033[0m'
 
 # 错误处理函数
@@ -29,16 +29,37 @@ input_confirm() {
     done
 }
 
-# 验证端口号输入 (1-65535)
+# 验证端口号输入 (1-65535) 且检查占用
 input_port() {
     local var_name="$1"
     while true; do
         read -p "请输入新端口号 (1024-65535): " res < /dev/tty
-        if [[ "$res" =~ ^[0-9]+$ ]] && [ "$res" -ge 1 ] && [ "$res" -le 65535 ]; then
+        
+        # 1. 检查是否为纯数字
+        if [[ ! "$res" =~ ^[0-9]+$ ]] || [ "$res" -lt 1 ] || [ "$res" -gt 65535 ]; then
+            echo -e "${RED}错误：请输入 1 到 65535 之间的有效数字！${NC}"
+            continue
+        fi
+
+        # 2. 检查端口是否被占用 (使用 ss 命令)
+        # 如果当前端口就是正在使用的 SSH 端口，则允许通过
+        local current_ssh_port=$(ss -tlnp | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | head -n1)
+        
+        if [ "$res" == "$current_ssh_port" ]; then
+            echo -e "${GREEN}此端口正是当前 SSH 正在使用的端口，无需修改。${NC}"
             eval "$var_name='$res'"
             break
+        fi
+
+        # 检查是否有其他进程占用该端口
+        if ss -tln | grep -q ":$res "; then
+            local process_name=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2)
+            echo -e "${RED}错误：端口 $res 已被占用！占用程序: [${process_name:-未知}]${NC}"
+            echo -e "${YELLOW}请尝试使用其他端口（例如：2222, 8888 等）。${NC}"
         else
-            echo -e "${RED}错误：端口号必须是 1-65535 之间的数字！${NC}"
+            echo -e "${GREEN}端口 $res 可用。${NC}"
+            eval "$var_name='$res'"
+            break
         fi
     done
 }
@@ -48,6 +69,12 @@ input_port() {
 
 # --- 0. 环境预检 ---
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
+# 预装检查端口所需的工具 ss (通常属于 iproute2 包)
+if ! command -v ss &>/dev/null; then
+    echo "正在安装必要网络检查工具..."
+    apt-get update && apt-get install -y iproute2 || yum install -y iproute || echo "警告：无法安装 ss 工具，将跳过端口占用检查。"
+fi
+
 if ! command -v sudo &>/dev/null; then
     echo -e "${YELLOW}[注意] 系统未安装 'sudo'。没有它，新用户将无法提权。${NC}"
     input_confirm "是否现在安装 sudo? [y/n]: " do_install
@@ -64,21 +91,20 @@ while true; do
     read -p "请输入你要创建的用户名: " username < /dev/tty
     if [[ -z "$username" ]]; then
         echo -e "${RED}用户名不能为空！${NC}"
+    elif id "$username" &>/dev/null; then
+        echo -e "${YELLOW}用户 $username 已存在，将直接更新其配置。${NC}"
+        break
     else
+        useradd -m -s /bin/bash "$username" || error_exit "创建失败" "检查磁盘。"
         break
     fi
 done
 
-if id "$username" &>/dev/null; then
-    echo -e "${GREEN}[INFO] 用户 $username 已存在。${NC}"
-else
-    useradd -m -s /bin/bash "$username" || error_exit "创建失败" "磁盘空间可能已满。"
-fi
-
-echo -e "\n${YELLOW}>>> 请为新用户 $username 设置密码 (屏幕不显示字符):${NC}"
+echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码 (输入时不显示字符):${NC}"
 passwd "$username" < /dev/tty || error_exit "密码设置失败" "请重试。"
 
 # --- 2. 权限注入 ---
+mkdir -p /etc/sudoers.d/
 echo "$username ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$username"
 chmod 440 "/etc/sudoers.d/$username"
 
@@ -100,7 +126,7 @@ echo "$public_key" > "$user_home/.ssh/authorized_keys"
 chmod 600 "$user_home/.ssh/authorized_keys"
 chown -R "$username:$username" "$user_home/.ssh"
 
-# --- 4. SSH 安全设置 (严格检查输入) ---
+# --- 4. SSH 安全设置 (包含端口冲突检查) ---
 echo -e "\n--- 4. SSH 安全设置选项 | SSH Configuration ---"
 ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_users=""
 
@@ -130,5 +156,6 @@ echo -e "\n${RED}!!! 警示：重启后请开启新窗口，并使用 'sudo -i' 
 input_confirm "是否立即重启 SSHD 生效? [y/n]: " res_sshd
 if [ "$res_sshd" == "y" ]; then
     systemctl restart sshd
-    echo -e "${GREEN}SSHD 已重启。测试端口: $ssh_port${NC}"
+    echo -e "${GREEN}SSHD 已重启。监听端口: $ssh_port${NC}"
+    echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$(curl -s ifconfig.me || echo '服务器IP')${NC}"
 fi
