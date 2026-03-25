@@ -157,6 +157,7 @@ echo -e "\n${RED}!!! 警示：重启后请开启新窗口，并使用 'sudo -i' 
 input_confirm "是否立即重启 SSHD 生效? [y/n]: " res_sshd
 if [ "$res_sshd" == "y" ]; then
     systemctl restart sshd
+    SERVER_IP=$(curl -s6 ifconfig.me || curl -s4 ifconfig.me || echo "您的服务器IP")
     echo -e "${GREEN}SSHD 已重启。监听端口: $ssh_port${NC}"
-    echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$(curl -s ifconfig.me || echo '服务器IP')${NC}"
+    echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$SERVER_IP${NC}"
 fi
