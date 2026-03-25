@@ -98,26 +98,37 @@ command -v sudo &>/dev/null || install_pkg_confirm "sudo" "用于新用户提权
 command -v curl &>/dev/null || install_pkg_confirm "curl" "用于获取公网IP"
 
 # --- 4. 用户创建 & 强制密码校验 ---
-# ... (创建用户代码) ...
-
-# 关键修复：死循环校验直到成功
-success=1
-while [ $success -ne 0 ]; do
-    echo -e "\n${YELLOW}>>> 请为 $username 设置密码 (两次输入需一致):${NC}"
-    # 使用 </dev/tty 确保 passwd 直接从键盘读取，不被脚本流干扰
-    passwd "$username" </dev/tty
-    success=$?
-    
-    if [ $success -eq 0 ]; then
-        echo -e "${GREEN}[✔] 密码设置成功！${NC}"
+# --- 1. 用户创建部分 ---
+while true; do
+    echo -e "\n${YELLOW}请输入要创建的用户名 (例如 cmssky):${NC}"
+    read -r username
+    if [[ -n "$username" ]]; then
+        # 检查用户是否已存在，不存在则创建
+        if id "$username" &>/dev/null; then
+            echo -e "${YELLOW}用户 $username 已存在，直接设置密码。${NC}"
+            break
+        else
+            useradd -m -s /bin/bash "$username" || adduser -D -s /bin/bash "$username"
+            echo -e "${GREEN}用户 $username 创建成功。${NC}"
+            break
+        fi
     else
-        echo -e "${RED}[✘] 密码设置失败（可能两次不一致），请重试！${NC}"
-        sleep 1
+        echo -e "${RED}错误：用户名不能为空！${NC}"
     fi
 done
 
-# 只有跳出上面的循环，才会执行这一步
-echo -e "\n--- 3. SSH 公钥配置 | SSH Key Setup ---"
+# --- 2. 密码设置部分 (死循环校验) ---
+while true; do
+    echo -e "\n${YELLOW}>>> 请为 $username 设置密码 (两次输入需一致):${NC}"
+    # 使用 </dev/tty 解决 curl 管道运行脚本时的输入流抢占问题
+    if passwd "$username" </dev/tty; then
+        echo -e "${GREEN}[✔] 密码设置成功！${NC}"
+        break
+    else
+        echo -e "${RED}[✘] 密码设置失败，请重试！${NC}"
+        sleep 1
+    fi
+done
 
 # 权限注入
 mkdir -p /etc/sudoers.d/
