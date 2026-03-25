@@ -125,17 +125,33 @@ echo "$username ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$username"
 chmod 440 "/etc/sudoers.d/$username"
 
 # --- 5. SSH 密钥配置 ---
-echo -e "\n--- 2. SSH 公钥配置 | SSH Key Setup ---"
+# --- 3. SSH 密钥配置 (全平台适配版) ---
+echo -e "\n--- 3. SSH 公钥配置 | SSH Key Setup ---"
+
+# 动态获取用户家目录，解决 root 运行脚本时 ~ 指向错误的问题
 user_home=$(eval echo "~$username")
-mkdir -p "$user_home/.ssh" && chmod 700 "$user_home/.ssh"
+
+# 1. 创建目录并赋予 700 权限 (只有用户自己可读写)
+mkdir -p "$user_home/.ssh"
+chmod 700 "$user_home/.ssh"
+
 while true; do
-    echo -e "${YELLOW}请粘贴 SSH 公钥 (id_rsa.pub 内容):${NC}"
-    read -r public_key < /dev/tty
-    [[ -n "$public_key" ]] && break || echo -e "${RED}不能为空！${NC}"
+    echo -e "${YELLOW}请粘贴 SSH 公钥 (ssh-rsa...):${NC}"
+    read -r raw_key < /dev/tty
+    # 自动修剪空格，防止粘贴时产生干扰
+    public_key=$(echo "$raw_key" | xargs)
+    [[ -n "$public_key" ]] && break || echo -e "${RED}公钥不能为空！${NC}"
 done
-echo "$public_key" > "$user_home/.ssh/authorized_keys"
+
+# 2. 写入公钥并强制 600 权限
+# 使用 printf 避免 echo 可能产生的换行符问题
+printf "%s\n" "$public_key" > "$user_home/.ssh/authorized_keys"
 chmod 600 "$user_home/.ssh/authorized_keys"
+
+# 3. 【最关键】修正所有权，否则 SSH 会因为 root 拥有该文件而拒绝登录
 chown -R "$username:$username" "$user_home/.ssh"
+
+echo -e "${GREEN}公钥配置完成，权限已校验。${NC}"
 
 # --- 6. SSH 安全加固 ---
 echo -e "\n--- 3. SSH 安全设置 | SSH Configuration ---"
