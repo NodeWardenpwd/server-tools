@@ -35,7 +35,6 @@ input_port() {
     while true; do
         read -p "请输入新端口号 (1024-65535): " res < /dev/tty
         
-        # 1. 检查是否为纯数字
         if [[ ! "$res" =~ ^[0-9]+$ ]] || [ "$res" -lt 1 ] || [ "$res" -gt 65535 ]; then
             echo -e "${RED}错误：请输入 1 到 65535 之间的有效数字！${NC}"
             continue
@@ -53,8 +52,10 @@ input_port() {
 
         # 检查是否有其他进程占用该端口
         if ss -tln | grep -q ":$res "; then
-            local process_name=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2)
-            echo -e "${RED}错误：端口 $res 已被占用！占用程序: [${process_name:-未知}]${NC}"
+            local process_info=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2 | head -n1)
+            
+            echo -e "${RED}错误：端口 $res 已被占用！${NC}"
+            echo -e "${RED}占用程序: [${process_info:-未知}]${NC}" # 另起一行显示
             echo -e "${YELLOW}请尝试使用其他端口（例如：2222, 8888 等）。${NC}"
         else
             echo -e "${GREEN}端口 $res 可用。${NC}"
