@@ -28,9 +28,3 @@ bash <(curl -sSL https://node.netlib.re/ssh-harden)
 ```bash
 apt-get update && apt-get install -y curl
 ```
-
-短链
-
-```bash
-wget -qO- https://node.netlib.re/ssh-harden | bash
-```
