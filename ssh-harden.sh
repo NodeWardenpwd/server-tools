@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 颜色定义 (已修正 \033 引导符)
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -15,7 +15,6 @@ error_exit() {
 
 # --- 验证函数库 ---
 
-# 验证 y/n 输入
 input_confirm() {
     local prompt="$1"
     local var_name="$2"
@@ -29,12 +28,10 @@ input_confirm() {
     done
 }
 
-# 验证端口号输入且检查占用 (优化排版与进程提取)
 input_port() {
     local var_name="$1"
     while true; do
         read -p "请输入新端口号 (1024-65535): " res < /dev/tty
-        
         if [[ ! "$res" =~ ^[0-9]+$ ]] || [ "$res" -lt 1 ] || [ "$res" -gt 65535 ]; then
             echo -e "${RED}错误：请输入 1 到 65535 之间的有效数字！${NC}"
             continue
@@ -47,7 +44,6 @@ input_port() {
         fi
 
         if ss -tln | grep -q ":$res "; then
-            # 优化进程提取逻辑，解决多行显示问题
             local p_info=$(ss -tlnp | grep ":$res " | awk '{print $6}' | cut -d'"' -f2 | head -n1)
             echo -e "${RED}错误：端口 $res 已被占用！${NC}"
             echo -e "${RED}占用程序: [${p_info:-未知}]${NC}"
@@ -65,7 +61,6 @@ input_port() {
 # --- 0. 环境预检 ---
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 针对 Debian 10 Buster EOL 的源修复逻辑
 if grep -q "buster" /etc/debian_version 2>/dev/null; then
     if ! apt update &>/dev/null; then
         echo -e "${YELLOW}[修复] 检测到 Debian 10 官方源已失效，正在切换至归档源...${NC}"
@@ -78,15 +73,14 @@ if grep -q "buster" /etc/debian_version 2>/dev/null; then
 fi
 
 if ! command -v ss &>/dev/null; then
-    echo "正在安装必要网络检查工具..."
-    apt-get update && apt-get install -y iproute2 || yum install -y iproute || echo "警告：无法安装 ss 工具。"
+    apt-get update && apt-get install -y iproute2 || yum install -y iproute
 fi
 
 if ! command -v sudo &>/dev/null; then
-    echo -e "${YELLOW}[注意] 系统未安装 'sudo'。没有它，新用户将无法提权。${NC}"
+    echo -e "${YELLOW}[注意] 系统未安装 'sudo'。${NC}"
     input_confirm "是否现在安装 sudo? [y/n]: " do_install
     if [ "$do_install" == "y" ]; then
-        apt-get update && apt-get install -y sudo || yum install -y sudo || error_exit "安装失败" "请检查网络。"
+        apt-get update && apt-get install -y sudo || yum install -y sudo
     else
         echo -e "${RED}用户拒绝安装 sudo，脚本终止。${NC}"; exit 1
     fi
@@ -99,15 +93,14 @@ while true; do
     if [[ -z "$username" ]]; then
         echo -e "${RED}用户名不能为空！${NC}"
     elif id "$username" &>/dev/null; then
-        echo -e "${YELLOW}用户 $username 已存在，将直接更新其配置。${NC}"
-        break
+        echo -e "${YELLOW}用户 $username 已存在，更新其配置。${NC}"; break
     else
         useradd -m -s /bin/bash "$username" || error_exit "创建失败" "检查磁盘。"
         break
     fi
 done
 
-echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码 (输入时不显示字符):${NC}"
+echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码:${NC}"
 passwd "$username" < /dev/tty || error_exit "密码设置失败" "请重试。"
 
 # --- 2. 权限注入 ---
@@ -120,7 +113,7 @@ echo -e "\n--- 3. SSH 公钥配置 | SSH Key Setup ---"
 user_home="/home/$username"
 mkdir -p "$user_home/.ssh" && chmod 700 "$user_home/.ssh"
 while true; do
-    echo -e "${YELLOW}请粘贴您的 SSH 公钥 (id_rsa.pub 内容):${NC}"
+    echo -e "${YELLOW}请粘贴您的 SSH 公钥:${NC}"
     read -r public_key < /dev/tty
     [[ -n "$public_key" ]] && break || echo -e "${RED}公钥不能为空！${NC}"
 done
@@ -141,6 +134,9 @@ input_confirm "是否禁止 Root 登录? [y/n]: " c_root
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_user
 [[ "$c_user" == "y" ]] && allow_users="AllowUsers $username"
 
+# 确保主配置文件包含 Include 路径
+grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config || sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+
 # 写入配置
 mkdir -p /etc/ssh/sshd_config.d/
 cat <<EOF > /etc/ssh/sshd_config.d/ssh.conf
@@ -151,12 +147,22 @@ $allow_users
 EOF
 
 # --- 5. 重启与指引 ---
-echo -e "\n${RED}!!! 警示：重启后请开启新窗口，并使用 'sudo -i' 测试提权 !!!${NC}"
+echo -e "\n${RED}!!! 警示：重启后请开启新窗口测试，不要关闭当前窗口 !!!${NC}"
 input_confirm "是否立即重启 SSHD 生效? [y/n]: " res_sshd
 if [ "$res_sshd" == "y" ]; then
-    systemctl restart sshd
-    # 智能获取 IP (针对 IPv6 优化显示)
+    # 暴力兼容 Debian 12/Ubuntu 的 Socket 激活机制
+    systemctl stop ssh.socket 2>/dev/null
+    systemctl disable ssh.socket 2>/dev/null
+    systemctl mask ssh.socket 2>/dev/null
+
+    # 尝试重启服务（兼容不同发行版名称）
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+
     SERVER_IP=$(curl -s6 ifconfig.me || curl -s4 ifconfig.me || echo "您的服务器IP")
     echo -e "${GREEN}SSHD 已重启。监听端口: $ssh_port${NC}"
     echo -e "测试命令: ${YELLOW}ssh -p $ssh_port $username@$SERVER_IP${NC}"
+    
+    # 最后打印一次实际端口监听情况确认
+    echo -e "\n当前系统实际监听端口状态:"
+    ss -tlnp | grep -E "ssh|sshd"
 fi
