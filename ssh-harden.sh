@@ -70,18 +70,20 @@ if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
         fi
     fi
 elif [ -f /etc/debian_version ] && grep -q "^10" /etc/debian_version; then
-    # Debian 10 处理
-    if ! grep -q "mirrors.aliyun.com" /etc/apt/sources.list 2>/dev/null; then
-        echo -e "${RED}[温馨提示] Debian 10 (Buster) 官方源已停止维护。${NC}"
-        input_confirm "如果不切换至阿里云 Archive 存档源将无法下载组件，是否切换? [y/n]: " change_deb_repo
+    # Debian 10 换源：直接重写，不搞 sed 替换，防止路径错误
+    if ! grep -q "debian-archive" /etc/apt/sources.list 2>/dev/null; then
+        echo -e "${RED}[紧急提示] Debian 10 官方源已停服。${NC}"
+        input_confirm "是否切换至阿里云 Archive 存档源? [y/n]: " change_deb_repo
         if [[ "$change_deb_repo" == "y" ]]; then
-            cat /etc/apt/sources.list > /etc/apt/sources.list.bak
-            sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
-            sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
-            sed -i 's/buster\/updates/buster/g' /etc/apt/sources.list
+            echo "正在重写软件源..."
+            cat << 'EOF_DEB' > /etc/apt/sources.list
+deb http://mirrors.aliyun.com/debian-archive/debian/ buster main contrib non-free
+deb http://mirrors.aliyun.com/debian-archive/debian/ buster-backports main contrib non-free
+deb http://mirrors.aliyun.com/debian-archive/debian-security/ buster/updates main contrib non-free
+EOF_DEB
             apt-get update
         else
-            error_exit "用户拒绝" "由于官方源 404 且拒绝换源，脚本无法继续。"
+            error_exit "用户拒绝" "源失效且不换源，无法继续。"
         fi
     fi
 fi
