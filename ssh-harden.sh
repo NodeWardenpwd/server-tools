@@ -195,13 +195,20 @@ fi
 echo -e "\n${RED}⚠️  请务必确保在云安全组中放行 $ssh_port 端口！！${NC}"
 input_confirm "是否立即应用并重启 SSH 服务? [y/n]: " res_sshd
 
-if [[ "$res_sshd" == "y" ]]; then
-    if command -v systemctl &>/dev/null; then
-        systemctl disable --now ssh.socket 2>/dev/null || true
-        systemctl restart ssh || systemctl restart sshd
-    else
-        rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
+if command -v systemctl &>/dev/null; then
+    # 彻底解除 Socket 激活模式 (Ubuntu 22+ 兼容)
+    systemctl disable --now ssh.socket 2>/dev/null || true
+    
+    # 智能识别服务名并重启，不再报错
+    if systemctl list-unit-files | grep -q "^ssh.service"; then
+        systemctl restart ssh
+    elif systemctl list-unit-files | grep -q "^sshd.service"; then
+        systemctl restart sshd
     fi
+else
+    # 适配非 systemd 系统 (如 Alpine)
+    rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
+fi
 
     sleep 2
     if is_port_occupied "$ssh_port"; then
