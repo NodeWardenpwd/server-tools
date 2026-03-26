@@ -68,4 +68,3 @@ apt-get update && apt-get install -y curl
 ```bash
 apk add --no-cache curl bash
 ```
-
