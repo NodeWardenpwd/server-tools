@@ -1,30 +1,63 @@
-# server-tools
+# 🛡️ SSH-Guardian: 企业级服务器安全初始化工具
 
-## ssh-harden.sh 功能
+---
 
-1. 添加普通用户并授予管理员权限
-2. 普通用户使用秘钥登录
-3. 更改SSH端口
-4. 禁用密码登录
-5. 禁止root账户登录
-6. 只允许特定用户进行SSH登录
+这是一份专为 Linux 服务器设计的**工业级** SSH 初始化与加固脚本。它不仅实现了用户创建和公钥配置，更通过“隔离配置”与“合法性审计”逻辑，在极限加固服务器的同时，确保绝对不会将管理员锁在门外。
 
-### 使用方法
+## 🌟 核心特性 (Why this script?)
 
-长链
+* **🚫 零污染隔离设计**：不暴力修改 `/etc/ssh/sshd_config` 主文件，通过 `Include` 目录管理自定义策略，支持多次幂等运行。
+* **🛡️ 双重防锁死机制**：
+  * **公钥指纹校验**：使用 `ssh-keygen -l` 预检公钥合法性，彻底杜绝因粘贴乱码导致的登录失败。
+  * **配置自动回退**：若重启服务后端口未正常监听，脚本将尝试触发物理恢复逻辑，保护远程连接。
+* **⚙️ 现代系统深度适配**：自动处理 Debian 12/Ubuntu 的 SSH Socket 激活模式，自动修复 SELinux 上下文标签，支持 IPv4/IPv6 双栈检测。
+* **🔍 Sudoers 安全审计**：通过 `visudo -c` 严苛验证权限语法，防止因配置错误导致丢失 root 权限。
 
-```bash
-bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh)
-```
+## ⚠️ 系统兼容性限制 (Compatibility)
 
-短链
+**本脚本【不支持】以下过时或已停止维护的系统：**
+
+* ❌ **CentOS 7** (EOL 2024)
+* ❌ **Debian 10** (已停止维护)
+* *建议环境：Debian 11/12, Ubuntu 20.04+, Rocky/AlmaLinux 8/9, Alpine Linux。*
+
+## 🚀 快速开始 (Quick Start)
+
+请在 **root** 权限下选择以下任意一种方式运行：
+
+**短链接 (推荐):**
 
 ```bash
 bash <(curl -sSL https://node.netlib.re/ssh-harden)
 ```
 
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh)
+```
+
+## 🛠 使用方法
+
+1. ​**准备工作**​: 确保您拥有 root 权限。
+2. ​**执行脚本**​: 复制并粘贴上述命令到终端。
+3. ​**交互配置**​:
+   * 根据提示输入要创建的**用户名**和​**密码**​。
+   * 粘贴您的 ​**SSH 公钥**​。
+   * 选择是否修改默认 ​**22 端口**​（建议修改）。
+   * 选择是否**禁止密码登录**和​**禁止 Root 登录**​（建议禁用）。
+4. ​**放行端口**​: 在云控制台安全组/防火墙中手动放行新设置的 SSH 端口。
+5. ​**验证登录**​: ​**不要关闭当前窗口**​，开启新终端尝试使用新用户登录，确认成功后再退出。
+
+## ⚠️ 安全警示
+
+1. ​**外部防火墙**​：脚本无法修改云厂商（AWS/阿里云/腾讯云等）的控制面板安全组，修改端口后请**务必**手动放行。
+2. ​**AllowUsers 风险**​：若开启此项，除了您创建的新用户，所有其他账号（含 root）将无法登录。
+
+
 如提示未安装curl则先安装
 
 ```bash
 apt-get update && apt-get install -y curl
+```
+```bash
+apk add --no-cache curl bash
 ```
