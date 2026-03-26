@@ -53,13 +53,30 @@ get_home_dir() {
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 2.1 彻底修复 CentOS 8 官方源失效问题
+# 2.1 智能处理 CentOS 8 源问题
 if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
-    echo -e "${YELLOW}[检测到 CentOS 8] 正在切换至阿里云 Vault 存档源...${NC}"
-    mkdir -p /etc/yum.repos.d/bak
-    mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ || true
-    curl -s -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
-    yum clean all && yum makecache || echo -e "${RED}源同步失败${NC}"
+    echo -e "${YELLOW}[检测到 CentOS 8] 正在检查软件源状态...${NC}"
+    
+    # 检测是否已经是阿里云源
+    if grep -rq "mirrors.aliyun.com" /etc/yum.repos.d/ 2>/dev/null || grep -rq "mirrors.cloud.aliyuncs.com" /etc/yum.repos.d/ 2>/dev/null; then
+        echo -e "${GREEN}[跳过] 检测到当前已配置阿里云镜像源，无需修改。${NC}"
+    else
+        echo -e "${RED}[警告] CentOS 8 官方源已于 2021 年底停止维护。${NC}"
+        echo -e "${YELLOW}检测到您当前未配置阿里云存档源，后续安装组件可能会失败。${NC}"
+        input_confirm "是否授权脚本自动切换至阿里云 Vault 存档源? [y/n]: " change_repo
+        
+        if [[ "$change_repo" == "y" ]]; then
+            echo -e "${YELLOW}正在备份旧源并切换至阿里云...${NC}"
+            mkdir -p /etc/yum.repos.d/bak
+            # 使用 cp 加上时间戳备份，比 mv 更安全
+            cp /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ 2>/dev/null || true
+            rm -f /etc/yum.repos.d/*.repo
+            curl -s -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
+            yum clean all && yum makecache || echo -e "${RED}源同步失败，请检查网络${NC}"
+        else
+            error_exit "用户终止" "由于未修复软件源，脚本无法继续安装必要组件。"
+        fi
+    fi
 fi
 
 # 2.2 自动补全必要组件
@@ -91,7 +108,7 @@ while true; do
 done
 
 while true; do
-    echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码(请注意密码并不会显示):${NC}"
+    echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码:${NC}"
     passwd "$username" < /dev/tty && break || echo -e "${RED}重试...${NC}"
 done
 
@@ -127,7 +144,7 @@ grep -qxF "$public_key" "$auth_file" || echo "$public_key" >> "$auth_file"
 chown -R "$username:$username" "$ssh_dir"
 [ -d "$ssh_dir" ] && command -v restorecon &>/dev/null && restorecon -R "$ssh_dir" 2>/dev/null || true
 
-# --- 5. SSH 安全加固 (增强兼容逻辑) ---
+# --- 5. SSH 安全加固 ---
 echo -e "\n--- 2. SSH 安全设置 | SSH Configuration ---"
 ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_rule=""
 
@@ -148,7 +165,7 @@ input_confirm "是否禁止 Root 用户直接登录? [y/n]: " c_root
 [[ "$c_root" == "y" ]] && permit_root="no"
 
 echo -e "\n${RED}[安全警示] AllowUsers 会建立登录白名单。${NC}"
-echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他现有账号（包括 root）将无法通过 SSH 登录。${NC}"
+echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他账号（包括 root）将无法通过 SSH 登录。${NC}"
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_allow
 [[ "$c_allow" == "y" ]] && allow_rule="AllowUsers $username"
 
