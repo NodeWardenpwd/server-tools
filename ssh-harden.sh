@@ -91,7 +91,7 @@ while true; do
 done
 
 while true; do
-    echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码:${NC}"
+    echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码(请注意密码并不会显示):${NC}"
     passwd "$username" < /dev/tty && break || echo -e "${RED}重试...${NC}"
 done
 
@@ -147,13 +147,11 @@ input_confirm "是否禁用密码登录? [y/n]: " c_pwd
 input_confirm "是否禁止 Root 用户直接登录? [y/n]: " c_root
 [[ "$c_root" == "y" ]] && permit_root="no"
 
-# 【恢复】加强预警提示
 echo -e "\n${RED}[安全警示] AllowUsers 会建立登录白名单。${NC}"
 echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他现有账号（包括 root）将无法通过 SSH 登录。${NC}"
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_allow
 [[ "$c_allow" == "y" ]] && allow_rule="AllowUsers $username"
 
-# 配置写入逻辑 (Include 优先，失败则强制写入主文件)
 CONF_D="/etc/ssh/sshd_config.d/ssh_harden.conf"
 mkdir -p /etc/ssh/sshd_config.d/
 
@@ -164,20 +162,15 @@ PermitRootLogin $permit_root
 $allow_rule
 EOF
 
-# 尝试激活 Include
 sed -i '/^\s*Include\s*\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' /etc/ssh/sshd_config
 sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
 
-# 【修正核心】如果 Include 导致语法错误，则回滚并直接修改主文件
 if ! sshd -t &>/dev/null; then
     echo -e "${YELLOW}[兼容模式] Include 语法不受支持，正在切换至直接配置模式...${NC}"
-    # 回滚 Include 修改
     sed -i '/^\s*Include\s*\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' /etc/ssh/sshd_config
-    # 暴力清理主文件中可能冲突的旧项
     for key in "Port" "PasswordAuthentication" "PermitRootLogin" "AllowUsers"; do
         sed -i "/^\s*$key\s/d" /etc/ssh/sshd_config
     done
-    # 直接写入主文件末尾
     {
         echo "Port $ssh_port"
         echo "PasswordAuthentication $pwd_auth"
@@ -186,29 +179,25 @@ if ! sshd -t &>/dev/null; then
     } >> /etc/ssh/sshd_config
 fi
 
-# 最终语法预检
 if ! sshd -t; then
-    error_exit "SSH 配置预检失败" "语法冲突且无法自动修复。请手动检查 /etc/ssh/sshd_config"
+    error_exit "SSH 配置预检失败" "语法冲突且无法自动修复。"
 fi
 
 # --- 6. 服务重启 ---
 echo -e "\n${RED}⚠️  请务必确保在云安全组中放行 $ssh_port 端口！！${NC}"
 input_confirm "是否立即应用并重启 SSH 服务? [y/n]: " res_sshd
 
-if command -v systemctl &>/dev/null; then
-    # 彻底解除 Socket 激活模式 (Ubuntu 22+ 兼容)
-    systemctl disable --now ssh.socket 2>/dev/null || true
-    
-    # 智能识别服务名并重启，不再报错
-    if systemctl list-unit-files | grep -q "^ssh.service"; then
-        systemctl restart ssh
-    elif systemctl list-unit-files | grep -q "^sshd.service"; then
-        systemctl restart sshd
+if [[ "$res_sshd" == "y" ]]; then
+    if command -v systemctl &>/dev/null; then
+        systemctl disable --now ssh.socket 2>/dev/null || true
+        if systemctl list-unit-files | grep -q "^ssh.service"; then
+            systemctl restart ssh
+        elif systemctl list-unit-files | grep -q "^sshd.service"; then
+            systemctl restart sshd
+        fi
+    else
+        rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
     fi
-else
-    # 适配非 systemd 系统 (如 Alpine)
-    rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
-fi
 
     sleep 2
     if is_port_occupied "$ssh_port"; then
@@ -217,6 +206,6 @@ fi
         echo -e "用户: ${YELLOW}$username${NC} | 端口: ${YELLOW}$ssh_port${NC}"
         echo -e "测试连接: ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
     else
-        error_exit "重启失败" "端口未监听，请检查 journalctl -u ssh。"
+        error_exit "重启失败" "端口未监听，请检查系统日志。"
     fi
 fi
