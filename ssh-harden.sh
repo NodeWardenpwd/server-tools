@@ -10,6 +10,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 error_exit() {
@@ -49,44 +50,52 @@ get_home_dir() {
     fi
 }
 
-# --- 2. 环境初始化 ---
+# --- 2. 环境初始化与源处理 ---
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 2.1 智能处理 CentOS 8 源问题
+# 2.1 智能源处理逻辑 (CentOS 8 强制/Alpine 可选)
 if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
     echo -e "${YELLOW}[检测到 CentOS 8] 正在检查软件源状态...${NC}"
-    
-    # 检测是否已经是阿里云源
-    if grep -rq "mirrors.aliyun.com" /etc/yum.repos.d/ 2>/dev/null || grep -rq "mirrors.cloud.aliyuncs.com" /etc/yum.repos.d/ 2>/dev/null; then
-        echo -e "${GREEN}[跳过] 检测到当前已配置阿里云镜像源，无需修改。${NC}"
+    if grep -rq "mirrors.aliyun.com" /etc/yum.repos.d/ 2>/dev/null; then
+        echo -e "${GREEN}[跳过] 已配置阿里云镜像源。${NC}"
     else
-        echo -e "${RED}[警告] CentOS 8 官方源已于 2021 年底停止维护。${NC}"
-        echo -e "${YELLOW}检测到您当前未配置阿里云存档源，后续安装组件可能会失败。${NC}"
-        input_confirm "是否授权脚本自动切换至阿里云 Vault 存档源? [y/n]: " change_repo
-        
+        echo -e "${RED}[警告] CentOS 8 官方源已失效，必须修复才能安装组件。${NC}"
+        input_confirm "是否授权脚本切换至阿里云 Vault 存档源? [y/n]: " change_repo
         if [[ "$change_repo" == "y" ]]; then
-            echo -e "${YELLOW}正在备份旧源并切换至阿里云...${NC}"
             mkdir -p /etc/yum.repos.d/bak
-            # 使用 cp 加上时间戳备份，比 mv 更安全
             cp /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ 2>/dev/null || true
             rm -f /etc/yum.repos.d/*.repo
             curl -s -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
-            yum clean all && yum makecache || echo -e "${RED}源同步失败，请检查网络${NC}"
+            yum clean all && yum makecache || echo -e "${RED}同步失败，请检查网络${NC}"
         else
-            error_exit "用户终止" "由于未修复软件源，脚本无法继续安装必要组件。"
+            error_exit "用户拒绝" "未修复软件源，脚本无法继续安装必要组件。"
+        fi
+    fi
+elif [ -f /etc/alpine-release ]; then
+    if ! grep -q "mirrors.aliyun.com" /etc/apk/repositories 2>/dev/null; then
+        echo -e "${BLUE}[提示] 检测到当前 Alpine 使用官方源。${NC}"
+        input_confirm "是否切换至阿里云镜像源以加速组件安装? [y/n]: " change_alpine
+        if [[ "$change_alpine" == "y" ]]; then
+            sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+            apk update
         fi
     fi
 fi
 
-# 2.2 自动补全必要组件
+# 2.2 组件安装交互逻辑 (每一步都需用户授权)
 for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
     cmd=${pkg%%:*}; real_pkg=${pkg##*:}
     if ! command -v "$cmd" &>/dev/null; then
-        echo -e "${YELLOW}[缺失] $cmd ($real_pkg)${NC}"
-        if command -v apk &>/dev/null; then apk add --no-cache "$real_pkg"
-        elif command -v apt-get &>/dev/null; then apt-get update && apt-get install -y "$real_pkg"
-        elif command -v yum &>/dev/null; then yum install -y "$real_pkg"
+        echo -e "${YELLOW}[缺失组件] $cmd (所属包: $real_pkg)${NC}"
+        input_confirm "是否授权安装组件 $real_pkg? [y/n]: " install_choice
+        if [[ "$install_choice" == "y" ]]; then
+            if command -v apk &>/dev/null; then apk add --no-cache "$real_pkg"
+            elif command -v apt-get &>/dev/null; then apt-get update && apt-get install -y "$real_pkg"
+            elif command -v yum &>/dev/null; then yum install -y "$real_pkg"
+            fi
+        else
+            error_exit "权限缺失" "由于拒绝安装必要组件 $real_pkg，脚本无法继续运行。"
         fi
     fi
 done
