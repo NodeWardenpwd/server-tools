@@ -25,11 +25,13 @@
 
 请在 **root** 权限下选择以下任意一种方式运行：
 
-**短链接 (推荐):**
+**短链:**
 
 ```bash
 bash <(curl -sSL https://node.netlib.re/ssh-harden)
 ```
+
+**长链:**
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/refs/heads/main/ssh-harden.sh)
@@ -53,7 +55,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/re
 2. ​**AllowUsers 风险**​：若开启此项，除了您创建的新用户，所有其他账号（含 root）将无法登录。
 
 
-如提示未安装curl则先安装
+## 如提示未安装curl则先安装
 
 ```bash
 apt-get update && apt-get install -y curl
