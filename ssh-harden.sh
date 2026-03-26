@@ -53,11 +53,10 @@ get_home_dir() {
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 2.1 智能处理停服系统软件源 (CentOS 8 & Debian 10)
+# 2.1 仅针对 CentOS 8 处理源问题 (Alpine 已移除干扰)
 if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
-    # CentOS 8 处理
     if ! grep -rq "mirrors.aliyun.com" /etc/yum.repos.d/ 2>/dev/null; then
-        echo -e "${RED}[温馨提示] CentOS 8 官方源已彻底停服。${NC}"
+        echo -e "${RED}[紧急提示] CentOS 8 官方源已彻底停服。${NC}"
         input_confirm "如果不切换至阿里云 Vault 源将无法安装组件，是否切换? [y/n]: " change_repo
         if [[ "$change_repo" == "y" ]]; then
             mkdir -p /etc/yum.repos.d/bak
@@ -69,23 +68,6 @@ if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
             error_exit "用户拒绝" "由于官方源失效且不选择换源，脚本无法继续。"
         fi
     fi
-elif [ -f /etc/debian_version ] && grep -q "^10" /etc/debian_version; then
-    # Debian 10 换源：直接重写，不搞 sed 替换，防止路径错误
-    if ! grep -q "debian-archive" /etc/apt/sources.list 2>/dev/null; then
-        echo -e "${RED}[紧急提示] Debian 10 官方源已停服。${NC}"
-        input_confirm "是否切换至阿里云 Archive 存档源? [y/n]: " change_deb_repo
-        if [[ "$change_deb_repo" == "y" ]]; then
-            echo "正在重写软件源..."
-            cat << 'EOF_DEB' > /etc/apt/sources.list
-deb http://mirrors.aliyun.com/debian-archive/debian/ buster main contrib non-free
-deb http://mirrors.aliyun.com/debian-archive/debian/ buster-backports main contrib non-free
-deb http://mirrors.aliyun.com/debian-archive/debian-security/ buster/updates main contrib non-free
-EOF_DEB
-            apt-get update
-        else
-            error_exit "用户拒绝" "源失效且不换源，无法继续。"
-        fi
-    fi
 fi
 
 # 2.2 补全组件 (全交互模式)
@@ -95,7 +77,8 @@ for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
         echo -e "${YELLOW}[缺失组件] 系统未检测到 $cmd (${real_pkg})${NC}"
         input_confirm "是否现在安装该组件? [y/n]: " do_install
         if [[ "$do_install" == "y" ]]; then
-            if command -v apt-get &>/dev/null; then apt-get update && apt-get install -y "$real_pkg"
+            if command -v apk &>/dev/null; then apk add --no-cache "$real_pkg"
+            elif command -v apt-get &>/dev/null; then apt-get update && apt-get install -y "$real_pkg"
             elif command -v yum &>/dev/null; then yum install -y "$real_pkg"
             fi
         else
@@ -111,7 +94,11 @@ while true; do
     [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]] && { echo -e "${RED}格式非法！${NC}"; continue; }
     
     if ! id "$username" &>/dev/null; then
-        useradd -m -s /bin/bash "$username"
+        if command -v useradd &>/dev/null; then
+            useradd -m -s /bin/bash "$username"
+        else
+            adduser -D -s /bin/bash "$username" 
+        fi
     fi
     break
 done
@@ -222,7 +209,7 @@ if [[ "$res_sshd" == "y" ]]; then
             systemctl restart sshd
         fi
     else
-        /etc/init.d/ssh restart || /etc/init.d/sshd restart
+        rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
     fi
 
     sleep 2
