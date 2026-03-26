@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =====================================
-# 企业级服务器 SSH 安全初始化与加固脚本 
+# 企业级服务器 SSH 安全初始化与加固脚本
 # =====================================
 
 set -euo pipefail
@@ -59,7 +59,7 @@ if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
     mkdir -p /etc/yum.repos.d/bak
     mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ || true
     curl -s -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
-    yum clean all && yum makecache || echo -e "${RED}源同步失败，请检查网络连接${NC}"
+    yum clean all && yum makecache || echo -e "${RED}源同步失败${NC}"
 fi
 
 # 2.2 自动补全必要组件
@@ -73,23 +73,6 @@ for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
         fi
     fi
 done
-
-# 2.3 OpenSSH 版本预检
-SSH_VER=$(ssh -V 2>&1 | grep -oP 'OpenSSH_\K[0-9.]+')
-if [[ $(echo -e "$SSH_VER\n7.3" | sort -V | head -n1) != "7.3" ]]; then
-    echo -e "${RED}[版本过低] 当前 OpenSSH 版本 ($SSH_VER) 不支持 Include 语法。${NC}"
-    input_confirm "是否尝试自动升级 OpenSSH 以继续? [y/n]: " update_ssh
-    if [[ "$update_ssh" == "y" ]]; then
-        echo -e "${YELLOW}正在尝试升级 OpenSSH...${NC}"
-        if command -v apt-get &>/dev/null; then apt-get update && apt-get install --only-upgrade -y openssh-server
-        elif command -v yum &>/dev/null; then yum update -y openssh-server
-        fi
-        echo -e "${GREEN}升级完成，请重新运行此脚本。${NC}"
-        exit 0
-    else
-        error_exit "环境不支持" "版本过低且未升级，脚本无法继续。"
-    fi
-fi
 
 # --- 3. 用户与权限配置 ---
 while true; do
@@ -109,7 +92,7 @@ done
 
 while true; do
     echo -e "\n${YELLOW}>>> 请为用户 $username 设置密码:${NC}"
-    passwd "$username" < /dev/tty && break || echo -e "${RED}设置失败。${NC}"
+    passwd "$username" < /dev/tty && break || echo -e "${RED}重试...${NC}"
 done
 
 S_USER=$(echo "$username" | tr -cd 'a-zA-Z0-9_')
@@ -117,9 +100,9 @@ SUDO_CONF="/etc/sudoers.d/$S_USER"
 echo "$username ALL=(ALL:ALL) ALL" > "$SUDO_CONF.tmp"
 visudo -c -f "$SUDO_CONF.tmp" &>/dev/null \
     && mv "$SUDO_CONF.tmp" "$SUDO_CONF" && chmod 440 "$SUDO_CONF" \
-    || { rm -f "$SUDO_CONF.tmp"; error_exit "Sudoers 校验失败" "权限语法错误。"; }
+    || { rm -f "$SUDO_CONF.tmp"; error_exit "Sudoers 校验失败" "语法错误。"; }
 
-# --- 4. SSH 公钥安全配置 ---
+# --- 4. SSH 公钥配置 ---
 echo -e "\n--- 1. SSH 公钥配置 | SSH Key Setup ---"
 user_home=$(get_home_dir "$username")
 ssh_dir="$user_home/.ssh"
@@ -142,10 +125,9 @@ auth_file="$ssh_dir/authorized_keys"
 touch "$auth_file" && chmod 600 "$auth_file"
 grep -qxF "$public_key" "$auth_file" || echo "$public_key" >> "$auth_file"
 chown -R "$username:$username" "$ssh_dir"
-
 [ -d "$ssh_dir" ] && command -v restorecon &>/dev/null && restorecon -R "$ssh_dir" 2>/dev/null || true
 
-# --- 5. SSH 安全加固 ---
+# --- 5. SSH 安全加固 (增强兼容逻辑) ---
 echo -e "\n--- 2. SSH 安全设置 | SSH Configuration ---"
 ssh_port=22; pwd_auth="yes"; permit_root="yes"; allow_rule=""
 
@@ -165,12 +147,15 @@ input_confirm "是否禁用密码登录? [y/n]: " c_pwd
 input_confirm "是否禁止 Root 用户直接登录? [y/n]: " c_root
 [[ "$c_root" == "y" ]] && permit_root="no"
 
+# 【恢复】加强预警提示
+echo -e "\n${RED}[安全警示] AllowUsers 会建立登录白名单。${NC}"
+echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他现有账号（包括 root）将无法通过 SSH 登录。${NC}"
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_allow
 [[ "$c_allow" == "y" ]] && allow_rule="AllowUsers $username"
 
+# 配置写入逻辑 (Include 优先，失败则强制写入主文件)
 CONF_D="/etc/ssh/sshd_config.d/ssh_harden.conf"
 mkdir -p /etc/ssh/sshd_config.d/
-[ -f "$CONF_D" ] && cp "$CONF_D" "$CONF_D.bak"
 
 cat <<EOF > "$CONF_D"
 Port $ssh_port
@@ -179,18 +164,36 @@ PermitRootLogin $permit_root
 $allow_rule
 EOF
 
-if ! grep -Eq "^\s*Include\s+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config; then
-    sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+# 尝试激活 Include
+sed -i '/^\s*Include\s*\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' /etc/ssh/sshd_config
+sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
+
+# 【修正核心】如果 Include 导致语法错误，则回滚并直接修改主文件
+if ! sshd -t &>/dev/null; then
+    echo -e "${YELLOW}[兼容模式] Include 语法不受支持，正在切换至直接配置模式...${NC}"
+    # 回滚 Include 修改
+    sed -i '/^\s*Include\s*\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' /etc/ssh/sshd_config
+    # 暴力清理主文件中可能冲突的旧项
+    for key in "Port" "PasswordAuthentication" "PermitRootLogin" "AllowUsers"; do
+        sed -i "/^\s*$key\s/d" /etc/ssh/sshd_config
+    done
+    # 直接写入主文件末尾
+    {
+        echo "Port $ssh_port"
+        echo "PasswordAuthentication $pwd_auth"
+        echo "PermitRootLogin $permit_root"
+        [ -n "$allow_rule" ] && echo "$allow_rule"
+    } >> /etc/ssh/sshd_config
 fi
 
+# 最终语法预检
 if ! sshd -t; then
-    [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D" || rm -f "$CONF_D"
-    error_exit "SSH 配置预检失败" "语法冲突，已回滚。"
+    error_exit "SSH 配置预检失败" "语法冲突且无法自动修复。请手动检查 /etc/ssh/sshd_config"
 fi
 
 # --- 6. 服务重启 ---
-echo -e "\n${RED}⚠️ 请确保放行 $ssh_port 端口！！${NC}"
-input_confirm "是否立即应用并重启? [y/n]: " res_sshd
+echo -e "\n${RED}⚠️  请务必确保在云安全组中放行 $ssh_port 端口！！${NC}"
+input_confirm "是否立即应用并重启 SSH 服务? [y/n]: " res_sshd
 
 if [[ "$res_sshd" == "y" ]]; then
     if command -v systemctl &>/dev/null; then
@@ -207,7 +210,6 @@ if [[ "$res_sshd" == "y" ]]; then
         echo -e "用户: ${YELLOW}$username${NC} | 端口: ${YELLOW}$ssh_port${NC}"
         echo -e "测试连接: ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
     else
-        [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D"
-        error_exit "重启失败" "端口未监听，配置已回滚。"
+        error_exit "重启失败" "端口未监听，请检查 journalctl -u ssh。"
     fi
 fi
