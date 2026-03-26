@@ -53,10 +53,10 @@ get_home_dir() {
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 2.1 仅针对 CentOS 8 处理源问题 (Alpine 已移除干扰)
+# 2.1 针对 CentOS 8 处理源问题 
 if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
     if ! grep -rq "mirrors.aliyun.com" /etc/yum.repos.d/ 2>/dev/null; then
-        echo -e "${RED}[紧急提示] CentOS 8 官方源已彻底停服。${NC}"
+        echo -e "${RED}[温馨提示] CentOS 8 官方源已彻底停服。${NC}"
         input_confirm "如果不切换至阿里云 Vault 源将无法安装组件，是否切换? [y/n]: " change_repo
         if [[ "$change_repo" == "y" ]]; then
             mkdir -p /etc/yum.repos.d/bak
