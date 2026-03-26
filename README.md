@@ -1,6 +1,5 @@
 # 🛡️ SSH-Guardian: Enterprise Server Security Initialization Tool
 
----
 
 This is an **industrial-grade** SSH initialization and hardening script designed specifically for Linux servers. It not only handles user creation and public key configuration but also utilizes "Isolated Configuration" and "Validity Auditing" logic to maximize server security while ensuring administrators are never accidentally locked out.
 
