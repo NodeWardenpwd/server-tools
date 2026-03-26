@@ -38,7 +38,6 @@ input_confirm() {
 is_port_occupied() {
     local port=$1
     if command -v ss &>/dev/null; then
-        # 正则匹配说明: 匹配以 : 或 . 结尾的端口号，确保 22 不会匹配到 2222
         ss -tuln | awk '{print $5}' | grep -qE "[:.]$port$" && return 0 || return 1
     fi
     return 1
@@ -58,7 +57,15 @@ get_home_dir() {
 [[ "$EUID" -ne 0 ]] && error_exit "权限不足" "请以 root 身份运行。"
 echo -e "\n--- 0. 环境预检 | Environment Check ---"
 
-# 自动补全必要组件
+# 2.1 修复 CentOS 8 停止维护导致的源失效问题
+if [ -f /etc/redhat-release ] && grep -q "release 8" /etc/redhat-release; then
+    echo -e "${YELLOW}[检测到 CentOS 8] 正在尝试修复失效的官方软件源...${NC}"
+    sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
+    sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.azure.cn|g' /etc/yum.repos.d/CentOS-*
+    yum makecache || true
+fi
+
+# 2.2 自动补全必要组件
 for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
     cmd=${pkg%%:*}; real_pkg=${pkg##*:}
     if ! command -v "$cmd" &>/dev/null; then
@@ -69,6 +76,23 @@ for pkg in ss:iproute2 sudo:sudo curl:curl ssh-keygen:openssh-client; do
         fi
     fi
 done
+
+# 2.3 OpenSSH 版本预检 (Include 语法需要 >= 7.3)
+SSH_VER=$(ssh -V 2>&1 | grep -oP 'OpenSSH_\K[0-9.]+')
+if [[ $(echo -e "$SSH_VER\n7.3" | sort -V | head -n1) != "7.3" ]]; then
+    echo -e "${RED}[版本过低] 当前 OpenSSH 版本 ($SSH_VER) 不支持 Include 语法。${NC}"
+    input_confirm "是否尝试自动升级 OpenSSH 以继续? [y/n]: " update_ssh
+    if [[ "$update_ssh" == "y" ]]; then
+        echo -e "${YELLOW}正在尝试升级 OpenSSH...${NC}"
+        if command -v apt-get &>/dev/null; then apt-get update && apt-get install --only-upgrade -y openssh-server
+        elif command -v yum &>/dev/null; then yum update -y openssh-server
+        fi
+        echo -e "${GREEN}升级完成，请重新运行此脚本以应用新版本。${NC}"
+        exit 0
+    else
+        error_exit "环境不支持" "由于 OpenSSH 版本过低且未升级，脚本无法继续。"
+    fi
+fi
 
 # --- 3. 用户与权限配置 ---
 while true; do
@@ -91,7 +115,7 @@ while true; do
     passwd "$username" < /dev/tty && break || echo -e "${RED}设置失败，请重试。${NC}"
 done
 
-# Sudoers 幂等写入 (保留下划线)
+# Sudoers 幂等写入
 S_USER=$(echo "$username" | tr -cd 'a-zA-Z0-9_')
 SUDO_CONF="/etc/sudoers.d/$S_USER"
 echo "$username ALL=(ALL:ALL) ALL" > "$SUDO_CONF.tmp"
@@ -110,7 +134,7 @@ while true; do
     read -r raw_key < /dev/tty || error_exit "输入中断" "操作终止"
     public_key=$(echo "$raw_key" | xargs)
     
-    # 指纹合法性校验 (关键防锁死)
+    # 指纹合法性校验
     echo "$public_key" > "$ssh_dir/test_key.tmp"
     if ssh-keygen -l -f "$ssh_dir/test_key.tmp" &>/dev/null; then
         rm -f "$ssh_dir/test_key.tmp"; break
@@ -122,11 +146,9 @@ done
 
 auth_file="$ssh_dir/authorized_keys"
 touch "$auth_file" && chmod 600 "$auth_file"
-# 幂等追加公钥
 grep -qxF "$public_key" "$auth_file" || echo "$public_key" >> "$auth_file"
 chown -R "$username:$username" "$ssh_dir"
 
-# 修复 SELinux 上下文
 [ -d "$ssh_dir" ] && command -v restorecon &>/dev/null && restorecon -R "$ssh_dir" 2>/dev/null || true
 
 # --- 5. SSH 安全加固 (Include 隔离设计) ---
@@ -154,7 +176,7 @@ echo -e "${YELLOW}启用后，除了 $username 及其追加用户，所有其他
 input_confirm "是否仅允许 $username 登录? [y/n]: " c_allow
 [[ "$c_allow" == "y" ]] && allow_rule="AllowUsers $username"
 
-# 写入隔离配置 (幂等覆盖)
+# 写入隔离配置
 CONF_D="/etc/ssh/sshd_config.d/ssh_harden.conf"
 mkdir -p /etc/ssh/sshd_config.d/
 [ -f "$CONF_D" ] && cp "$CONF_D" "$CONF_D.bak"
@@ -166,7 +188,7 @@ PermitRootLogin $permit_root
 $allow_rule
 EOF
 
-# 激活 Include (增强正则匹配)
+# 激活 Include
 if ! grep -Eq "^\s*Include\s+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config; then
     sed -i "1i Include /etc/ssh/sshd_config.d/*.conf" /etc/ssh/sshd_config
 fi
@@ -174,15 +196,14 @@ fi
 # 预检
 if ! sshd -t; then
     [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D" || rm -f "$CONF_D"
-    error_exit "SSH 配置预检失败" "语法冲突，已自动回滚。请检查 /etc/ssh/sshd_config 的自定义设置。"
+    error_exit "SSH 配置预检失败" "语法冲突，已自动回滚。"
 fi
 
 # --- 6. 服务重启与连通性验证 ---
-echo -e "\n${RED}⚠️  注意：如果修改了端口，请务必在云服务器安全组放行 $ssh_port 端口！！${NC}"
-input_confirm "是否立即应用 SSH 配置并重启服务? [y/n]: " res_sshd
+echo -e "\n${RED}⚠️  注意：请务必在云服务器安全组放行 $ssh_port 端口！！${NC}"
+input_confirm "是否立即重启服务? [y/n]: " res_sshd
 
 if [[ "$res_sshd" == "y" ]]; then
-    # 彻底解除 Socket 激活模式 (Ubuntu/Debian 12 核心修正)
     if command -v systemctl &>/dev/null; then
         systemctl disable --now ssh.socket 2>/dev/null || true
         systemctl restart ssh || systemctl restart sshd
@@ -190,17 +211,14 @@ if [[ "$res_sshd" == "y" ]]; then
         rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
     fi
 
-    # 延迟自检
     sleep 2
     if is_port_occupied "$ssh_port"; then
-        # IPv4 优先获取公网 IP，防止 IPv6 阻塞
         IP=$(curl -4 -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 ifconfig.me || echo "服务器公网IP")
         echo -e "\n${GREEN}[✔] SSH 初始化加固成功！${NC}"
         echo -e "用户: ${YELLOW}$username${NC} | 端口: ${YELLOW}$ssh_port${NC}"
-        echo -e "请在${RED}保留当前窗口${NC}的情况下，开启新终端测试连接："
-        echo -e "${GREEN}ssh -p $ssh_port $username@$IP${NC}"
+        echo -e "请在${RED}新终端${NC}测试: ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
     else
         [ -f "$CONF_D.bak" ] && mv "$CONF_D.bak" "$CONF_D"
-        error_exit "重启失败" "端口未正常监听，已自动回滚配置。请检查系统日志 (journalctl -u ssh)。"
+        error_exit "重启失败" "端口未监听，配置已自动回滚。"
     fi
 fi
