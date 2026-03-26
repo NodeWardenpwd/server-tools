@@ -57,18 +57,15 @@ bash <(curl -sSL https://raw.githubusercontent.com/NodeWardenpwd/server-tools/re
 
 ## ⚙️如提示未安装curl则先安装
 
+### Debian && Ubantu
+
 ```bash
 apt-get update && apt-get install -y curl
 ```
+
+### Alpine
+
 ```bash
 apk add --no-cache curl bash
 ```
-:::: tabs
-::: tab-item 标签标题1
-这里填第一个分页的内容
-:::
 
-::: tab-item 标签标题2
-这里填第二个分页的内容
-:::
-::::
