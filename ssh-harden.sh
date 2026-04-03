@@ -217,12 +217,25 @@ if [[ "$res_sshd" == "y" ]]; then
     fi
 
     sleep 2
-    if is_port_occupied "$ssh_port"; then
+    
+    # 增加循环检测，最多等待 10 秒
+    SUCCESS=0
+    for i in {1..5}; do
+        if is_port_occupied "$ssh_port"; then
+            SUCCESS=1
+            break
+        fi
+        echo -e "${YELLOW}等待服务监听端口 $ssh_port... (Attempt $i/5)${NC}"
+        sleep 2
+    done
+
+    if [[ $SUCCESS -eq 1 ]]; then
         IP=$(curl -4 -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 ifconfig.me || echo "服务器公网IP")
         echo -e "\n${GREEN}[✔] 加固成功 (Hardening Successful)!${NC}"
         echo -e "用户 (User): ${YELLOW}$username${NC} | 端口 (Port): ${YELLOW}$ssh_port${NC}"
         echo -e "测试连接 (Test connection): ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
     else
-        error_exit "重启失败 (Restart failed)" "端口未监听，请检查系统日志 (Port not listening, check system logs)."
+        # 最终失败才退出
+        error_exit "重启失败 (Restart failed)" "端口 $ssh_port 未监听。请检查防火墙设置或运行 'systemctl status ssh'。 (Port not listening. Check firewall or run 'systemctl status ssh'.)"
     fi
 fi
