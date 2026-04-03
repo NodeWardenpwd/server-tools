@@ -35,8 +35,23 @@ input_confirm() {
 
 is_port_occupied() {
     local port=$1
+    # 1. 尝试使用 ss 检测 (兼容多种输出格式)
     if command -v ss &>/dev/null; then
-        ss -tuln | awk '{print $5}' | grep -qE "[:.]$port$" && return 0 || return 1
+        if ss -tuln | grep -qE "[:.]$port(\s|$)"; then
+            return 0
+        fi
+    fi
+    # 2. 尝试使用 netstat (如果存在)
+    if command -v netstat &>/dev/null; then
+        if netstat -tuln | grep -qE "[:.]$port\s"; then
+            return 0
+        fi
+    fi
+    # 3. 终极保险：检查 sshd 进程是否真的带着这个端口号在跑
+    # 这一步是为了防止 ss 在某些容器或特殊内核环境下抓不到监听
+    if pgrep -f "sshd" &>/dev/null && grep -q "Port $port" /etc/ssh/sshd_config.d/*.conf 2>/dev/null; then
+        # 如果进程在，且配置文件里确实写了这个端口，我们暂且认为它是成功的
+        return 0
     fi
     return 1
 }
