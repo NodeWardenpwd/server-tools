@@ -214,43 +214,40 @@ if ! sshd -t; then
     error_exit "SSH 配置预检失败 (SSH pre-check failed)" "语法冲突且无法自动修复 (Syntax conflict, unable to auto-repair)."
 fi
 
-# --- 6. 服务重启 | Service Restart ---
+# --- 6. 服务重启逻辑增强版 ---
 echo -e "\n${RED}⚠️  请务必确保在云安全组中放行 $ssh_port 端口！！${NC}"
-echo -e "${RED}(Make sure to allow port $ssh_port in your cloud security group!!)${NC}"
 input_confirm "是否立即应用并重启 SSH 服务? (Apply and restart SSH? [y/n]): " res_sshd
 
 if [[ "$res_sshd" == "y" ]]; then
     if command -v systemctl &>/dev/null; then
-        systemctl disable --now ssh.socket 2>/dev/null || true
+        # 1. 核心关键：必须彻底禁用并停止 ssh.socket，否则端口改不动
+        if systemctl is-active --quiet ssh.socket; then
+            echo -e "${YELLOW}检测到 ssh.socket 正在运行，正在切换至 service 模式...${NC}"
+            systemctl stop ssh.socket
+            systemctl disable ssh.socket
+        fi
+
+        # 2. 重载配置并重启服务
+        systemctl daemon-reload
         if systemctl list-unit-files | grep -q "^ssh.service"; then
             systemctl restart ssh
-        elif systemctl list-unit-files | grep -q "^sshd.service"; then
+        else
             systemctl restart sshd
         fi
     else
+        # 非 systemd 系统（如 Alpine）
         rc-service sshd restart 2>/dev/null || /etc/init.d/ssh restart
     fi
 
-    sleep 2
-    
-    # 增加循环检测，最多等待 10 秒
-    SUCCESS=0
-    for i in {1..5}; do
-        if is_port_occupied "$ssh_port"; then
-            SUCCESS=1
-            break
-        fi
-        echo -e "${YELLOW}等待服务监听端口 $ssh_port... (Attempt $i/5)${NC}"
-        sleep 2
-    done
-
-    if [[ $SUCCESS -eq 1 ]]; then
-        IP=$(curl -4 -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 ifconfig.me || echo "服务器公网IP")
-        echo -e "\n${GREEN}[✔] 加固成功 (Hardening Successful)!${NC}"
-        echo -e "用户 (User): ${YELLOW}$username${NC} | 端口 (Port): ${YELLOW}$ssh_port${NC}"
-        echo -e "测试连接 (Test connection): ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
+    # 3. 验证监听（增强版检测）
+    sleep 3
+    if ss -tuln | grep -qE "[:.]$ssh_port(\s|$)"; then
+        IP=$(curl -4 -s --max-time 3 https://api.ipify.org || echo "服务器IP")
+        echo -e "\n${GREEN}[✔] 端口切换成功!${NC}"
+        echo -e "当前监听端口: ${YELLOW}$ssh_port${NC}"
+        echo -e "测试命令: ${GREEN}ssh -p $ssh_port $username@$IP${NC}"
     else
-        # 最终失败才退出
-        error_exit "重启失败 (Restart failed)" "端口 $ssh_port 未监听。请检查防火墙设置或运行 'systemctl status ssh'。 (Port not listening. Check firewall or run 'systemctl status ssh'.)"
+        echo -e "${RED}[错误] 端口 $ssh_port 未能成功监听，系统可能回退到了默认配置。${NC}"
+        echo -e "${YELLOW}手动检查命令: ss -tuln | grep ssh${NC}"
     fi
 fi
